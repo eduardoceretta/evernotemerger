@@ -208,7 +208,7 @@ class Evernote():
 
             return None
 
-    def createNote(self, notebook, title, tagNames, content, isMarkdown=False):
+    def createNote(self, notebook, title, tagNames, content, resources, isMarkdown=False):
         try:
             noteStore = self._getNoteStoreClient()
             note = Types.Note()
@@ -216,8 +216,56 @@ class Evernote():
             note.notebookGuid = notebook.guid
             note.tagNames = tagNames
             note.content = self._convertContent(content) if isMarkdown else content
+            note.resources = resources
             cnote = noteStore.createNote(self.token, note)
-            return note
+            return cnote
+
+        except Exception as e:
+            LOG(explain_error(e))
+            LOG(e)
+            track = traceback.format_exc()
+            print(track)
+
+            return None
+
+    def updateNote(self, noteMetadata, **kwargs):
+        try:
+            noteStore = self._getNoteStoreClient()
+            note = Types.Note()
+            note.guid = noteMetadata.guid
+            note.title = noteMetadata.title
+
+            if "title" in kwargs:
+                note.title = kwargs["title"]
+            if "notebook" in kwargs:
+                note.notebookGuid = kwargs["notebook"].guid
+            if "tagNames" in kwargs:
+                note.tagNames = kwargs["tagNames"]
+            if "content" in kwargs:
+                note.content = self._convertContent(kwargs["content"])
+            if "resources" in kwargs:
+                note.resources = kwargs["resources"]
+            cnote = noteStore.updateNote(self.token, note)
+            return cnote
+
+        except Exception as e:
+            LOG(explain_error(e))
+            LOG(e)
+            track = traceback.format_exc()
+            print(track)
+
+            return None
+
+    def moveNote(self, noteMetadata, notebook):
+        try:
+            noteStore = self._getNoteStoreClient()
+            note = Types.Note()
+            note.guid = noteMetadata.guid
+            note.title = noteMetadata.title
+            note.notebookGuid = notebook.guid
+
+            cnote = noteStore.updateNote(self.token, note)
+            return cnote
 
         except Exception as e:
             LOG(explain_error(e))
@@ -259,6 +307,21 @@ class Evernote():
             print(track)
             return None
 
+    def getNoteResources(self, note):
+        try:
+            noteStore = self._getNoteStoreClient()
+
+            return noteStore.getNote(
+                self.token,
+                note.guid,
+                False,True,True,True
+            ).resources or []
+        except Exception as e:
+            LOG(explain_error(e))
+            LOG(e)
+            track = traceback.format_exc()
+            print(track)
+            return None
 
 
 token = os.environ['EVERNOTE_DEV_TOKEN']
@@ -266,7 +329,7 @@ noteStoreUrl = os.environ['EVERNOTE_DEV_NOTESTORE_URL']
 
 ev = Evernote(token, noteStoreUrl)
 notebooks = ev.getNotebooks()
-
+####################################
 # BACKUP ALL NOTES:
 # for notebook in notebooks:
 #     print (f"Notebook:{notebook.stack}.{notebook.name} - {notebook.guid}")
@@ -280,29 +343,57 @@ notebooks = ev.getNotebooks()
 #         print (mdtxt)
 #         print ("=============================")
 #     print ("++++++++++++++++++++++++++++++++++")
+####################################################
 
+MERGED_NOTE_TITLE = "EvernoteMerger_Merged"
+INPUT_NOTEBOOK_TITLE = "Input"
+ARCHIVE_NOTEBOOK_TITLE = "MergerArchive"
 
-notebook = next(filter(lambda x: x.stack is None and x.name == "Input", notebooks))
-notes = ev.getNotes(notebook)
+inputNotebook = next(filter(lambda x: x.stack is None and x.name == INPUT_NOTEBOOK_TITLE, notebooks))
+notes = ev.getNotes(inputNotebook)
+
+mergedNote = None
 
 contents = ""
+resources = []
+notesToBeMoved = []
 for note in notes:
+    if note.title == MERGED_NOTE_TITLE:
+        mergedNote = note
+        continue
     content = ev.getNoteContent(note)
     mdtxt = html2text.html2text(content)
+
+    resources.extend(ev.getNoteResources(note))
+
     createdTime = datetime.fromtimestamp(note.created // 1000).strftime("%Y-%m-%d %H:%M:%S")
-    contents += f"""
-# {note.title}
+    contents += f"# {note.title}\n\n{mdtxt}\n\n_CreatedAt: {createdTime}_\n\n"
 
-{mdtxt}
+    notesToBeMoved.append(note)
 
-_CreatedAt: {createdTime}_
-
-"""
 
 time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 contents += f"\n\n\n--------------------------\n_Merge generated at {time}_"
 
-# # print ("CONTENTS:\n",contents, "\nEND_CONTENTS")
-mergedNote = ev.createNote(notebook, "EvernoteMergerTest", [], contents, True)
-# print("NOTE", mergedNote)
+if len(notesToBeMoved) > 0:
+    if mergedNote:
+        print ("APPENDING")
+        content = ev.getNoteContent(mergedNote)
+        mdtxt = html2text.html2text(content)
+        r = ev.getNoteResources(mergedNote)
+        resources.extend(r)
+
+        mergedNote = ev.updateNote(mergedNote, content=f"{mdtxt}\n\n\n---------------\n\n\n{contents}\n", resources=resources)
+    else:
+        print ("CREATING NEW NOTE")
+        mergedNote = ev.createNote(inputNotebook, MERGED_NOTE_TITLE, [], contents, resources, True)
+
+
+    archiveNotebook = next(filter(lambda x: x.stack is None and x.name == ARCHIVE_NOTEBOOK_TITLE, notebooks))
+    for note in notesToBeMoved:
+        print(f"Move {note.title} to {archiveNotebook.name}")
+        ev.moveNote(note, archiveNotebook)
+
+
+
 print("done")
